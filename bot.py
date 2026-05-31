@@ -15,9 +15,10 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 hf_client = InferenceClient(token=HF_TOKEN) if HF_TOKEN else InferenceClient()
 
 current_model = "groq"
-
 HF_TEXT_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
 HF_IMAGE_MODEL = "Salesforce/blip-image-captioning-base"
+HF_TTI_MODEL = "black-forest-labs/FLUX.1-schnell"
+HF_I2I_MODEL = "timbrooks/instruct-pix2pix"
 
 SEARCH_TRIGGERS = ['cari', 'search', 'google', 'latest', 'terbaru', 'berita', 'news', 'update', 'terkini', 'hari ini']
 
@@ -33,6 +34,11 @@ def should_search(text):
     if t.startswith('/search') or t.startswith('!cari') or t.startswith('cari '):
         return True
     return any(trigger in t for trigger in SEARCH_TRIGGERS)
+
+def should_generate(text):
+    if text.startswith('/generate'):
+        return True
+    return any(text.lower().startswith(g) for g in ['gambar ', 'buat ', 'buatkan ', 'gambar:', 'buat:'])
 
 def format_results(results):
     if not results:
@@ -61,9 +67,28 @@ def ask_hf_vision(prompt, image_bytes):
     result = hf_client.image_to_text(image_bytes, model=HF_IMAGE_MODEL)
     return f"[HF Image Caption]\n{result}"
 
+def hf_generate_image(prompt):
+    image = hf_client.text_to_image(prompt, model=HF_TTI_MODEL)
+    buf = io.BytesIO()
+    image.save(buf, format='JPEG')
+    buf.seek(0)
+    return buf
+
+def hf_edit_image(image_bytes, prompt):
+    result = hf_client.image_to_image(image_bytes, prompt=prompt, model=HF_I2I_MODEL)
+    buf = io.BytesIO()
+    result.save(buf, format='JPEG')
+    buf.seek(0)
+    return buf
+
 MENU_TEXT = (
     "📋 MENU BOT ASISTEN AI FREDI\n\n"
     "💬 Tanya apa saja — AI akan menjawab\n\n"
+    "🎨 Buat gambar:\n"
+    "  /generate <deskripsi>\n"
+    "  atau ketik: gambar <deskripsi>\n\n"
+    "✏️ Edit gambar — kirim foto dg caption:\n"
+    "  edit: <instruksi>\n\n"
     "🌐 Cari info terbaru:\n"
     "  /search <query>\n"
     "  atau ketik: cari <query>\n\n"
@@ -72,13 +97,14 @@ MENU_TEXT = (
     "  /model — lihat AI aktif saat ini\n"
     "  /setmodel groq — Groq (rekomendasi)\n"
     "  /setmodel hf — Hugging Face (gratis)\n\n"
-    "📌 Contoh: /search harga emas hari ini"
+    "📌 Contoh: /generate kucing terbang di luar angkasa"
 )
 
 def send_menu(chat_id, text):
     from telebot.types import ReplyKeyboardMarkup, KeyboardButton
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
+        KeyboardButton("/generate"),
         KeyboardButton("/search"),
         KeyboardButton("/model"),
         KeyboardButton("/help"),
@@ -97,11 +123,7 @@ def start(message):
 def model_info(message):
     provider = "Groq (Llama 3.3 70B)" if current_model == "groq" else f"Hugging Face ({HF_TEXT_MODEL})"
     vision = "Groq Vision (Llama 3.2 90B)" if current_model == "groq" else f"Hugging Face ({HF_IMAGE_MODEL})"
-    text = (
-        f"🤖 Penyedia AI: {provider}\n"
-        f"🖼️ Analisis gambar: {vision}\n\n"
-        f"Gunakan /help untuk menu lengkap"
-    )
+    text = f"🤖 Penyedia AI: {provider}\n🖼️ Analisis gambar: {vision}\n🎨 Generate: {HF_TTI_MODEL}\n\nGunakan /help"
     send_menu(message.chat.id, text)
 
 @bot.message_handler(commands=['setmodel'])
@@ -117,11 +139,26 @@ def set_model(message):
     else:
         send_menu(message.chat.id, "Gunakan: /setmodel groq atau /setmodel hf")
 
+@bot.message_handler(commands=['generate'])
+def generate_command(message):
+    prompt = message.text.replace('/generate', '', 1).strip()
+    if not prompt:
+        send_menu(message.chat.id, "Gunakan: /generate <deskripsi>")
+        return
+    bot.send_chat_action(message.chat.id, 'upload_photo')
+    msg = bot.reply_to(message, "🎨 Sedang membuat gambar... mohon tunggu ~20 detik")
+    try:
+        buf = hf_generate_image(prompt)
+        bot.delete_message(message.chat.id, msg.message_id)
+        bot.send_photo(message.chat.id, buf, caption=f"🎨 {prompt}")
+    except Exception as e:
+        bot.edit_message_text(f"Gagal: {str(e)}", message.chat.id, msg.message_id)
+
 @bot.message_handler(commands=['search'])
 def search_command(message):
     q = message.text.replace('/search', '', 1).strip()
     if not q:
-        send_menu(message.chat.id, "Gunakan: /search <query>\nContoh: /search berita terbaru")
+        send_menu(message.chat.id, "Gunakan: /search <query>")
         return
     bot.send_chat_action(message.chat.id, 'typing')
     results = web_search(q)
@@ -142,19 +179,48 @@ def handle_photo(message):
         downloaded = bot.download_file(file_info.file_path)
         b64 = base64.b64encode(downloaded).decode('utf-8')
         data_url = f"data:image/jpeg;base64,{b64}"
-        prompt = message.caption or "Baca dan analisis semua teks yang ada di gambar ini."
+        caption = (message.caption or "").strip()
+        if caption.lower().startswith("edit:"):
+            prompt = caption[5:].strip()
+            if not prompt:
+                bot.reply_to(message, "Gunakan: edit: <instruksi>")
+                return
+            msg = bot.reply_to(message, "✏️ Sedang mengedit gambar...")
+            try:
+                buf = hf_edit_image(downloaded, prompt)
+                bot.delete_message(message.chat.id, msg.message_id)
+                bot.send_photo(message.chat.id, buf, caption=f"✏️ {prompt}")
+            except Exception as e:
+                bot.edit_message_text(f"Gagal: {str(e)}", message.chat.id, msg.message_id)
+            return
+        prompt = caption or "Baca dan analisis semua teks yang ada di gambar ini."
         try:
-            reply = ask_groq_vision(prompt, data_url) if current_model == 'groq' else ask_hf_vision(prompt, downloaded)
+            reply = ask_groq_vision(prompt, data_url)
         except Exception:
-            reply = ask_hf_vision(prompt, downloaded) if current_model == 'groq' else ask_groq_vision(prompt, data_url)
+            reply = ask_hf_vision(prompt, downloaded)
         bot.reply_to(message, reply)
     except Exception as e:
-        bot.reply_to(message, f"Gagal: {str(e)}")
+        bot.reply_to(message, f"Maaf, gagal memproses gambar: {str(e)}")
 
 @bot.message_handler(func=lambda m: True)
 def handle(message):
     text = message.text
     bot.send_chat_action(message.chat.id, 'typing')
+    if should_generate(text):
+        prompt = text
+        for p in ['/generate', 'gambar ', 'buat ', 'buatkan ', 'gambar:', 'buat:']:
+            if text.lower().startswith(p):
+                prompt = text[len(p):].strip()
+                break
+        if prompt:
+            msg = bot.reply_to(message, "🎨 Membuat gambar... ~20 detik")
+            try:
+                buf = hf_generate_image(prompt)
+                bot.delete_message(message.chat.id, msg.message_id)
+                bot.send_photo(message.chat.id, buf, caption=f"🎨 {prompt}")
+            except Exception as e:
+                bot.edit_message_text(f"Gagal: {str(e)}", message.chat.id, msg.message_id)
+            return
     if should_search(text):
         q = text
         for p in ['/search', '!cari', 'cari ']:
