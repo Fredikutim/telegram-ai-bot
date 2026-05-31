@@ -74,24 +74,19 @@ def ask_hf_vision(prompt, image_bytes):
     result = hf_client.image_to_text(image_bytes, model=HF_IMAGE_MODEL)
     return f"[HF Image Caption]\n{result}"
 
-def hf_generate_image(prompt):
+def generate_image(prompt):
     import requests
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-    resp = requests.post(
-        f"https://api-inference.huggingface.co/models/{HF_TTI_MODEL}",
-        headers=headers, json={"inputs": prompt}, timeout=120)
+    from urllib.parse import quote
+    url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?width=1024&height=1024&model=flux"
+    resp = requests.get(url, timeout=60)
     if resp.status_code != 200:
-        raise Exception(f"HF API {resp.status_code}: {resp.text[:200]}")
+        raise Exception(f"Gagal generate: {resp.status_code}")
     buf = io.BytesIO(resp.content)
     buf.seek(0)
     return buf
 
 def hf_edit_image(image_bytes, prompt):
-    result = hf_client.image_to_image(image_bytes, prompt=prompt, model=HF_I2I_MODEL)
-    buf = io.BytesIO()
-    result.save(buf, format='JPEG')
-    buf.seek(0)
-    return buf
+    raise Exception("Edit gambar gratis sedang tidak tersedia. Gunakan /generate untuk membuat gambar baru.")
 
 def send_menu(chat_id, text):
     from telebot.types import ReplyKeyboardMarkup, KeyboardButton
@@ -112,8 +107,6 @@ MENU_TEXT = (
     "🎨 Buat gambar:\n"
     "  /generate <deskripsi>\n"
     "  atau ketik: gambar <deskripsi>\n\n"
-    "✏️ Edit gambar — kirim foto dg caption:\n"
-    "  edit: <instruksi>\n\n"
     "🌐 Cari info terbaru:\n"
     "  /search <query>\n"
     "  atau ketik: cari <query>\n\n"
@@ -166,7 +159,7 @@ def generate_command(message):
     bot.send_chat_action(message.chat.id, 'upload_photo')
     msg = bot.reply_to(message, "🎨 Sedang membuat gambar... mohon tunggu ~20 detik")
     try:
-        buf = hf_generate_image(prompt)
+        buf = generate_image(prompt)
         bot.delete_message(message.chat.id, msg.message_id)
         bot.send_photo(message.chat.id, buf, caption=f"🎨 {prompt}")
     except Exception as e:
@@ -234,7 +227,7 @@ def handle(message):
         if prompt:
             msg = bot.reply_to(message, "🎨 Sedang membuat gambar... mohon tunggu ~20 detik")
             try:
-                buf = hf_generate_image(prompt)
+                buf = generate_image(prompt)
                 bot.delete_message(message.chat.id, msg.message_id)
                 bot.send_photo(message.chat.id, buf, caption=f"🎨 {prompt}")
             except Exception as e:
