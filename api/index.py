@@ -75,9 +75,14 @@ def ask_hf_vision(prompt, image_bytes):
     return f"[HF Image Caption]\n{result}"
 
 def hf_generate_image(prompt):
-    image = hf_client.text_to_image(prompt, model=HF_TTI_MODEL)
-    buf = io.BytesIO()
-    image.save(buf, format='JPEG')
+    import requests
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+    resp = requests.post(
+        f"https://api-inference.huggingface.co/models/{HF_TTI_MODEL}",
+        headers=headers, json={"inputs": prompt}, timeout=120)
+    if resp.status_code != 200:
+        raise Exception(f"HF API {resp.status_code}: {resp.text[:200]}")
+    buf = io.BytesIO(resp.content)
     buf.seek(0)
     return buf
 
