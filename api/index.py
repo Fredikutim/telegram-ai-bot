@@ -1,30 +1,28 @@
 import os
 import io
+import json
 import base64
 import traceback
 import telebot
 from groq import Groq
 from flask import Flask, request
 from duckduckgo_search import DDGS
-from huggingface_hub import InferenceClient
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
-HF_TOKEN = os.environ.get('HF_TOKEN')
+NVIDIA_API_KEY = os.environ.get('NVIDIA_API_KEY')
 
 app = Flask(__name__)
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 groq_client = Groq(api_key=GROQ_API_KEY)
-hf_client = InferenceClient(token=HF_TOKEN) if HF_TOKEN else InferenceClient()
 
 current_model = "groq"
-HF_TEXT_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
-HF_IMAGE_MODEL = "Salesforce/blip-image-captioning-base"
-HF_TTI_MODEL = "black-forest-labs/FLUX.1-schnell"
-HF_I2I_MODEL = "timbrooks/instruct-pix2pix"
+NVIDIA_BASE = "https://integrate.api.nvidia.com/v1"
 
 SEARCH_TRIGGERS = ['cari', 'search', 'google', 'latest', 'terbaru', 'berita', 'news', 'update', 'terkini', 'hari ini']
-GEN_TRIGGERS = ['gambar', 'buat', 'generate', 'lukis', 'foto', 'gambar ', 'buatkan']
+
+def nvidia_headers():
+    return {"Authorization": f"Bearer {NVIDIA_API_KEY}", "Content-Type": "application/json"}
 
 def web_search(query, max_results=5):
     try:
@@ -42,7 +40,6 @@ def should_search(text):
     return any(trigger in t for trigger in SEARCH_TRIGGERS)
 
 def should_generate(text):
-    t = text.lower().strip()
     if text.startswith('/generate'):
         return True
     return any(text.lower().startswith(g) for g in ['gambar ', 'buat ', 'buatkan ', 'gambar:', 'buat:'])
@@ -60,110 +57,125 @@ def ask_groq(prompt, max_tokens=1500):
         model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], max_tokens=max_tokens)
     return resp.choices[0].message.content
 
-def ask_groq_vision(prompt, data_url, max_tokens=2000):
-    resp = groq_client.chat.completions.create(
-        model="llama-3.2-90b-vision-preview",
-        messages=[{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": data_url}}]}],
-        max_tokens=max_tokens)
-    return resp.choices[0].message.content
+def ask_nvidia(prompt, max_tokens=1500):
+    import requests
+    resp = requests.post(f"{NVIDIA_BASE}/chat/completions", headers=nvidia_headers(), json={
+        "model": "meta/llama-3.3-70b-instruct",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens, "temperature": 0.7}, timeout=30)
+    if resp.status_code != 200:
+        raise Exception(f"NVIDIA {resp.status_code}: {resp.text[:200]}")
+    return resp.json()['choices'][0]['message']['content']
 
-def ask_hf(prompt, max_tokens=1500):
-    return hf_client.text_generation(prompt, model=HF_TEXT_MODEL, max_new_tokens=max_tokens, temperature=0.7)
-
-def ask_hf_vision(prompt, image_bytes):
-    result = hf_client.image_to_text(image_bytes, model=HF_IMAGE_MODEL)
-    return f"[HF Image Caption]\n{result}"
+def ask_nvidia_vision(prompt, data_url):
+    import requests
+    resp = requests.post(f"{NVIDIA_BASE}/chat/completions", headers=nvidia_headers(), json={
+        "model": "nvidia/llama-3.2-90b-vision-nim",
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": data_url}}]}],
+        "max_tokens": 2000}, timeout=30)
+    if resp.status_code != 200:
+        raise Exception(f"NVIDIA Vision {resp.status_code}: {resp.text[:200]}")
+    return resp.json()['choices'][0]['message']['content']
 
 def generate_image(prompt):
     import requests
-    from urllib.parse import quote
-    url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?width=1024&height=1024&model=flux"
-    resp = requests.get(url, timeout=60)
+    resp = requests.post(f"{NVIDIA_BASE}/images/generations", headers=nvidia_headers(), json={
+        "model": "stabilityai/stable-diffusion-3.5-large",
+        "prompt": prompt, "width": 1024, "height": 1024}, timeout=60)
     if resp.status_code != 200:
-        raise Exception(f"Gagal generate: {resp.status_code}")
-    buf = io.BytesIO(resp.content)
+        raise Exception(f"NVIDIA Image {resp.status_code}: {resp.text[:200]}")
+    b64 = resp.json()['data'][0]['b64_json']
+    buf = io.BytesIO(base64.b64decode(b64))
     buf.seek(0)
     return buf
-
-def hf_edit_image(image_bytes, prompt):
-    raise Exception("Edit gambar gratis sedang tidak tersedia. Gunakan /generate untuk membuat gambar baru.")
 
 def send_menu(chat_id, text):
     from telebot.types import ReplyKeyboardMarkup, KeyboardButton
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
-        KeyboardButton("/generate"),
-        KeyboardButton("/search"),
-        KeyboardButton("/model"),
-        KeyboardButton("/help"),
-        KeyboardButton("/setmodel groq"),
-        KeyboardButton("/setmodel hf"),
+        KeyboardButton("/generate"), KeyboardButton("/search"),
+        KeyboardButton("/model"), KeyboardButton("/help"),
+        KeyboardButton("/setmodel groq"), KeyboardButton("/setmodel nvidia"),
     )
     bot.send_message(chat_id, text, reply_markup=markup)
 
 MENU_TEXT = (
-    "📋 MENU BOT ASISTEN AI FREDI\n\n"
-    "💬 Tanya apa saja — AI akan menjawab\n\n"
-    "🎨 Buat gambar:\n"
-    "  /generate <deskripsi>\n"
-    "  atau ketik: gambar <deskripsi>\n\n"
-    "🌐 Cari info terbaru:\n"
-    "  /search <query>\n"
-    "  atau ketik: cari <query>\n\n"
-    "🖼️ Kirim gambar — AI baca & analisis teks\n\n"
-    "⚙️ Pengaturan AI:\n"
-    "  /model — lihat AI aktif saat ini\n"
-    "  /setmodel groq — Groq (rekomendasi)\n"
-    "  /setmodel hf — Hugging Face (gratis)\n\n"
-    "📌 Contoh: /generate kucing terbang di luar angkasa"
+    "📋 MENU BOT\n\n"
+    "💬 Tanya apa saja — AI menjawab\n"
+    "🎨 /generate <deskripsi> — buat gambar\n"
+    "🌐 /search <query> atau ketik 'cari ...' — info terbaru\n"
+    "🖼️ Kirim gambar — AI baca & analisis teks\n"
+    "⚙️ /setmodel groq — Groq\n"
+    "⚙️ /setmodel nvidia — NVIDIA NIM\n"
+    "📌 Contoh: /generate kucing terbang"
 )
 
 @bot.message_handler(commands=['start', 'menu', 'help'])
 def start(message):
-    provider = "Groq (Llama 3.3 70B)" if current_model == "groq" else f"Hugging Face ({HF_TEXT_MODEL})"
-    text = f"🤖 Asisten AI Fredi — AI aktif: {provider}\n\n{MENU_TEXT}"
-    send_menu(message.chat.id, text)
+    provider = "Groq" if current_model == "groq" else "NVIDIA NIM"
+    send_menu(message.chat.id, f"🤖 Asisten AI Fredi — AI: {provider}\n\n{MENU_TEXT}")
 
 @bot.message_handler(commands=['model'])
 def model_info(message):
-    provider = "Groq (Llama 3.3 70B)" if current_model == "groq" else f"Hugging Face ({HF_TEXT_MODEL})"
-    vision = "Groq Vision (Llama 3.2 90B)" if current_model == "groq" else f"Hugging Face ({HF_IMAGE_MODEL})"
-    tti = HF_TTI_MODEL
-    text = (
-        f"🤖 Penyedia AI: {provider}\n"
-        f"🖼️ Analisis gambar: {vision}\n"
-        f"🎨 Generate gambar: {tti}\n\n"
-        f"Gunakan /help untuk menu lengkap"
-    )
-    send_menu(message.chat.id, text)
+    p = "Groq (Llama 3.3 70B)" if current_model == "groq" else "NVIDIA NIM (Llama 3.3 70B)"
+    img = "Groq Vision" if current_model == "groq" else "NVIDIA Vision"
+    send_menu(message.chat.id, f"🤖 AI: {p}\n🖼️ Gambar: {img}\n🎨 Generate: Stable Diffusion 3.5\n\nGunakan /help")
 
 @bot.message_handler(commands=['setmodel'])
 def set_model(message):
     global current_model
-    choice = message.text.replace('/setmodel', '', 1).strip().lower()
-    if choice == 'groq':
+    c = message.text.replace('/setmodel', '', 1).strip().lower()
+    if c == 'groq':
         current_model = 'groq'
-        send_menu(message.chat.id, "✅ Beralih ke Groq (Llama 3.3 70B)")
-    elif choice in ('hf', 'huggingface'):
-        current_model = 'hf'
-        send_menu(message.chat.id, f"✅ Beralih ke Hugging Face ({HF_TEXT_MODEL})")
+        send_menu(message.chat.id, "✅ Beralih ke Groq")
+    elif c in ('nvidia', 'nim'):
+        if not NVIDIA_API_KEY:
+            send_menu(message.chat.id, "❌ NVIDIA_API_KEY belum diset di Vercel")
+            return
+        current_model = 'nvidia'
+        send_menu(message.chat.id, "✅ Beralih ke NVIDIA NIM (Llama 3.3 + SD3.5)")
     else:
-        send_menu(message.chat.id, "Gunakan: /setmodel groq atau /setmodel hf")
+        send_menu(message.chat.id, "Gunakan: /setmodel groq atau /setmodel nvidia")
 
 @bot.message_handler(commands=['generate'])
 def generate_command(message):
     prompt = message.text.replace('/generate', '', 1).strip()
     if not prompt:
-        send_menu(message.chat.id, "Gunakan: /generate <deskripsi>\nContoh: /generate kucing terbang pakai jetpack")
+        send_menu(message.chat.id, "Gunakan: /generate <deskripsi>")
         return
     bot.send_chat_action(message.chat.id, 'upload_photo')
-    msg = bot.reply_to(message, "🎨 Sedang membuat gambar... mohon tunggu ~20 detik")
+    msg = bot.reply_to(message, "🎨 Membuat gambar dengan Stable Diffusion 3.5...")
     try:
         buf = generate_image(prompt)
         bot.delete_message(message.chat.id, msg.message_id)
         bot.send_photo(message.chat.id, buf, caption=f"🎨 {prompt}")
     except Exception as e:
         bot.edit_message_text(f"Gagal: {str(e)}", message.chat.id, msg.message_id)
+
+@bot.message_handler(commands=['search'])
+def search_command(message):
+    q = message.text.replace('/search', '', 1).strip()
+    if not q:
+        send_menu(message.chat.id, "Gunakan: /search <query>")
+        return
+    bot.send_chat_action(message.chat.id, 'typing')
+    results = web_search(q)
+    ctx = format_results(results)
+    prompt = f"Pertanyaan: {q}\n{ctx}\nJawab berdasarkan hasil pencarian di atas."
+    try:
+        reply = ask_groq(prompt) if current_model == 'groq' else ask_nvidia(prompt)
+        bot.reply_to(message, reply)
+    except Exception as e:
+        try:
+            if current_model == 'nvidia':
+                reply = ask_groq(prompt)
+            else:
+                reply = ask_nvidia(prompt)
+            bot.reply_to(message, f"[Fallback] {reply}")
+        except:
+            bot.reply_to(message, f"Error: {str(e)}. Coba /setmodel")
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
@@ -174,58 +186,41 @@ def handle_photo(message):
         downloaded = bot.download_file(file_info.file_path)
         b64 = base64.b64encode(downloaded).decode('utf-8')
         data_url = f"data:image/jpeg;base64,{b64}"
-        caption = (message.caption or "").strip()
-
-        if caption.lower().startswith("edit:"):
-            prompt = caption[5:].strip()
-            if not prompt:
-                bot.reply_to(message, "Gunakan: edit: <instruksi>\nContoh caption: edit: jadikan style anime")
-                return
-            msg = bot.reply_to(message, "✏️ Sedang mengedit gambar... mohon tunggu")
-            try:
-                buf = hf_edit_image(downloaded, prompt)
-                bot.delete_message(message.chat.id, msg.message_id)
-                bot.send_photo(message.chat.id, buf, caption=f"✏️ {prompt}")
-            except Exception as e:
-                bot.edit_message_text(f"Gagal edit: {str(e)}", message.chat.id, msg.message_id)
-            return
-
-        prompt = caption or "Baca dan analisis semua teks yang ada di gambar ini. Jelaskan isinya secara detail."
+        prompt = (message.caption or "").strip() or "Baca dan analisis semua teks yang ada di gambar ini."
+        if current_model == 'groq':
+            reply = groq_client.chat.completions.create(
+                model="llama-3.2-90b-vision-preview",
+                messages=[{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": data_url}}]}],
+                max_tokens=2000).choices[0].message.content
+        else:
+            reply = ask_nvidia_vision(prompt, data_url)
+        bot.reply_to(message, reply)
+    except Exception as e:
         try:
-            reply = ask_groq_vision(prompt, data_url)
-        except Exception:
-            reply = ask_hf_vision(prompt, downloaded)
-        bot.reply_to(message, reply)
-    except Exception as e:
-        bot.reply_to(message, f"Maaf, gagal memproses gambar: {str(e)}")
-
-@bot.message_handler(commands=['search'])
-def search_command(message):
-    q = message.text.replace('/search', '', 1).strip()
-    if not q:
-        send_menu(message.chat.id, "Gunakan: /search <query>\nContoh: /search berita terbaru 2026")
-        return
-    bot.send_chat_action(message.chat.id, 'typing')
-    results = web_search(q)
-    ctx = format_results(results)
-    prompt = f"Pertanyaan: {q}\n{ctx}\nJawab berdasarkan hasil pencarian di atas. Jika kosong, gunakan pengetahuanmu."
-    try:
-        reply = ask_groq(prompt) if current_model == 'groq' else ask_hf(prompt)
-        bot.reply_to(message, reply)
-    except Exception as e:
-        bot.reply_to(message, f"Error: {str(e)}. Coba ganti model dengan /setmodel")
+            if current_model == 'nvidia':
+                reply = groq_client.chat.completions.create(
+                    model="llama-3.2-90b-vision-preview",
+                    messages=[{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": data_url}}]}],
+                    max_tokens=2000).choices[0].message.content
+            else:
+                reply = ask_nvidia_vision(prompt, data_url)
+            bot.reply_to(message, f"[Fallback] {reply}")
+        except Exception as e2:
+            bot.reply_to(message, f"Maaf, gagal: {str(e2)}")
 
 @bot.message_handler(func=lambda m: True)
 def handle(message):
     text = message.text
     bot.send_chat_action(message.chat.id, 'typing')
+
     if should_generate(text):
+        prompt = text
         for p in ['/generate', 'gambar ', 'buat ', 'buatkan ', 'gambar:', 'buat:']:
             if text.lower().startswith(p):
                 prompt = text[len(p):].strip()
                 break
         if prompt:
-            msg = bot.reply_to(message, "🎨 Sedang membuat gambar... mohon tunggu ~20 detik")
+            msg = bot.reply_to(message, "🎨 Membuat gambar dengan SD3.5...")
             try:
                 buf = generate_image(prompt)
                 bot.delete_message(message.chat.id, msg.message_id)
@@ -233,6 +228,7 @@ def handle(message):
             except Exception as e:
                 bot.edit_message_text(f"Gagal: {str(e)}", message.chat.id, msg.message_id)
             return
+
     if should_search(text):
         q = text
         for p in ['/search', '!cari', 'cari ']:
@@ -241,14 +237,18 @@ def handle(message):
                 break
         results = web_search(q)
         ctx = format_results(results)
-        prompt = f"Pertanyaan: {q}\n{ctx}\nJawab berdasarkan hasil pencarian di atas. Jika kosong, gunakan pengetahuanmu."
+        prompt = f"Pertanyaan: {q}\n{ctx}\nJawab berdasarkan hasil pencarian di atas."
     else:
         prompt = text
     try:
-        reply = ask_groq(prompt) if current_model == 'groq' else ask_hf(prompt)
+        reply = ask_groq(prompt) if current_model == 'groq' else ask_nvidia(prompt)
         bot.reply_to(message, reply)
     except Exception as e:
-        bot.reply_to(message, f"Error: {str(e)}. Coba ganti model dengan /setmodel")
+        try:
+            reply = ask_nvidia(prompt) if current_model == 'groq' else ask_groq(prompt)
+            bot.reply_to(message, f"[Fallback] {reply}")
+        except:
+            bot.reply_to(message, f"Error: {str(e)}")
 
 @app.route('/', methods=['GET'])
 def index():
