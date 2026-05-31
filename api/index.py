@@ -27,6 +27,7 @@ def handle(message):
         bot.reply_to(message, "Maaf ada error, coba lagi!")
 
 @app.route('/', methods=['POST'])
+@app.route('/api/', methods=['POST'])
 def webhook():
     body = request.get_data().decode('utf-8')
     update = telebot.types.Update.de_json(body)
@@ -34,5 +35,6 @@ def webhook():
     return 'ok', 200
 
 @app.route('/', methods=['GET'])
+@app.route('/api/', methods=['GET'])
 def index():
     return 'Telegram AI Bot is running!', 200
