@@ -29,10 +29,13 @@ def handle(message):
 @app.route('/', methods=['POST'])
 @app.route('/api/', methods=['POST'])
 def webhook():
-    body = request.get_data().decode('utf-8')
-    update = telebot.types.Update.de_json(body)
-    bot.process_new_updates([update])
-    return 'ok', 200
+    try:
+        body = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(body)
+        bot.process_new_updates([update])
+        return 'ok', 200
+    except Exception as e:
+        return str(e), 500
 
 @app.route('/', methods=['GET'])
 @app.route('/api/', methods=['GET'])
