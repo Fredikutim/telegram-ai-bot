@@ -1,10 +1,12 @@
 ﻿import os
 import io
+import re
 import json
 import base64
 import telebot
 from groq import Groq
 from duckduckgo_search import DDGS
+from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
@@ -19,6 +21,29 @@ SEARCH_TRIGGERS = ['cari', 'search', 'google', 'latest', 'terbaru', 'berita', 'n
 
 def nvidia_headers():
     return {"Authorization": f"Bearer {NVIDIA_API_KEY}", "Content-Type": "application/json"}
+
+def extract_url(text):
+    urls = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', text)
+    return urls[0] if urls else None
+
+def read_webpage(url):
+    import requests
+    try:
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        if resp.status_code != 200:
+            return None, f"HTTP {resp.status_code}"
+        soup = BeautifulSoup(resp.text, 'lxml')
+        for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
+            tag.decompose()
+        title = soup.title.string.strip() if soup.title and soup.title.string else ""
+        text = soup.get_text(separator='\n', strip=True)
+        lines = [l for l in text.split('\n') if len(l) > 20]
+        content = "\n".join(lines[:150])
+        if len(content) > 4000:
+            content = content[:4000] + "..."
+        return content, title
+    except Exception as e:
+        return None, str(e)
 
 def web_search(query, max_results=5):
     try:
@@ -89,11 +114,12 @@ MENU_TEXT = (
     "📋 MENU BOT\n\n"
     "💬 Tanya apa saja — AI menjawab\n"
     "🎨 /generate <deskripsi> — buat gambar\n"
-    "🌐 /search <query> atau ketik 'cari ...' — info terbaru\n"
+    "🌐 /search <query> atau 'cari ...' — info terbaru\n"
+    "🔗 Tempel link web — AI baca soal/artikel\n"
     "🖼️ Kirim gambar — AI baca & analisis teks\n"
     "⚙️ /setmodel groq — Groq\n"
     "⚙️ /setmodel nvidia — NVIDIA NIM\n"
-    "📌 Contoh: /generate kucing terbang"
+    "📌 Contoh: tempel https://...soal-matematika"
 )
 
 def send_menu(chat_id, text):
@@ -217,6 +243,25 @@ def handle(message):
             except Exception as e:
                 bot.edit_message_text(f"Gagal: {str(e)}", message.chat.id, msg.message_id)
             return
+
+    url = extract_url(text)
+    if url:
+        msg = bot.reply_to(message, "🔗 Membaca halaman web...")
+        content, title = read_webpage(url)
+        if content is None:
+            bot.edit_message_text(f"Gagal: {title}", message.chat.id, msg.message_id)
+            return
+        question = text.replace(url, '').strip()
+        prompt = f"Konten: {title}\n\n{content}\n\n"
+        prompt += f"Pertanyaan: {question}\n\nJawab berdasarkan konten." if question else "Baca dan jelaskan isi konten. Jika ada soal, jawab."
+        bot.edit_message_text("🔗 Menganalisis...", message.chat.id, msg.message_id)
+        try:
+            reply = ask_groq(prompt, 2000) if current_model == 'groq' else ask_nvidia(prompt, 2000)
+            bot.edit_message_text(reply, message.chat.id, msg.message_id)
+        except Exception as e:
+            bot.edit_message_text(f"Error: {str(e)}", message.chat.id, msg.message_id)
+        return
+
     if should_search(text):
         q = text
         for p in ['/search', '!cari', 'cari ']:
