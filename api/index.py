@@ -123,20 +123,30 @@ def ask_openrouter(prompt, max_tokens=1500):
 
 def ask_openrouter_vision(prompt, data_url):
     import requests
-    resp = requests.post(f"{OPENROUTER_BASE}/chat/completions", headers={
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://telegram-ai-bot-tau.vercel.app",
-        "X-Title": "Fredi Telegram AI Bot"
-    }, json={
-        "model": "openrouter/free",
-        "messages": [{"role": "user", "content": [
-            {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": data_url}}]}],
-        "max_tokens": 2000}, timeout=30)
-    if resp.status_code != 200:
-        raise Exception(f"OpenRouter Vision {resp.status_code}: {resp.text[:200]}")
-    return resp.json()['choices'][0]['message']['content']
+    for model in ["nvidia/nemotron-nano-12b-2-vl:free", "openrouter/free"]:
+        try:
+            resp = requests.post(f"{OPENROUTER_BASE}/chat/completions", headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://telegram-ai-bot-tau.vercel.app",
+                "X-Title": "Fredi Telegram AI Bot"
+            }, json={
+                "model": model,
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}}]}],
+                "max_tokens": 2000}, timeout=30)
+            if resp.status_code == 200:
+                return resp.json()['choices'][0]['message']['content']
+            err = resp.text.lower()
+            if "does not support image" in err or "vision" in err:
+                continue
+            raise Exception(f"OpenRouter Vision {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            if "does not support image" in str(e).lower() or "vision" in str(e).lower():
+                continue
+            raise
+    raise Exception("Semua model OpenRouter gagal untuk vision")
 
 def generate_image(prompt):
     import requests
