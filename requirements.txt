@@ -3,3 +3,5 @@ groq
 flask
 requests
 duckduckgo_search
+huggingface_hub
+pillow
