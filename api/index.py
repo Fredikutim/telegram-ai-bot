@@ -21,6 +21,7 @@ bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 current_model = "groq"
+or_model = "openrouter/free"
 NVIDIA_BASE = "https://integrate.api.nvidia.com/v1"
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 
@@ -108,6 +109,7 @@ def ask_nvidia_vision(prompt, data_url):
     return resp.json()['choices'][0]['message']['content']
 
 def ask_openrouter(prompt, max_tokens=1500):
+    global or_model
     import requests
     resp = requests.post(f"{OPENROUTER_BASE}/chat/completions", headers={
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -115,7 +117,7 @@ def ask_openrouter(prompt, max_tokens=1500):
         "HTTP-Referer": "https://telegram-ai-bot-tau.vercel.app",
         "X-Title": "Fredi Telegram AI Bot"
     }, json={
-        "model": "openrouter/free",
+        "model": or_model,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens}, timeout=30)
     if resp.status_code != 200:
@@ -123,8 +125,9 @@ def ask_openrouter(prompt, max_tokens=1500):
     return resp.json()['choices'][0]['message']['content']
 
 def ask_openrouter_vision(prompt, data_url):
+    global or_model
     import requests
-    for model in ["nvidia/nemotron-nano-12b-2-vl:free", "openrouter/free"]:
+    for model in [or_model, "nvidia/nemotron-nano-12b-2-vl:free", "openrouter/free"]:
         try:
             resp = requests.post(f"{OPENROUTER_BASE}/chat/completions", headers={
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -244,29 +247,30 @@ MENU_TEXT = (
     "🖼️ Kirim gambar — AI baca & analisis teks\n"
     "⚙️ /setmodel groq — Groq\n"
     "⚙️ /setmodel nvidia — NVIDIA NIM\n"
-    "⚙️ /setmodel openrouter — OpenRouter (free models)\n"
+    "⚙️ /setmodel openrouter [model] — OpenRouter (default: free)\n"
     "📌 Contoh: tempel https://...soal-matematika"
 )
 
 @bot.message_handler(commands=['start', 'menu', 'help'])
 def start(message):
-    names = {"groq": "Groq", "nvidia": "NVIDIA NIM", "openrouter": "OpenRouter (Free)"}
+    names = {"groq": "Groq", "nvidia": "NVIDIA NIM", "openrouter": f"OpenRouter ({or_model})"}
     provider = names.get(current_model, current_model)
     send_menu(message.chat.id, f"🤖 Asisten AI Fredi — AI: {provider}\n\n{MENU_TEXT}")
 
 @bot.message_handler(commands=['model'])
 def model_info(message):
+    global or_model
     info = {
         "groq": ("Groq (Llama 3.3 70B)", "Groq Vision"),
         "nvidia": ("NVIDIA NIM (Llama 3.3 70B)", "NVIDIA Vision"),
-        "openrouter": ("OpenRouter (Free Models)", "OpenRouter Vision"),
+        "openrouter": (f"OpenRouter ({or_model})", "OpenRouter Vision"),
     }
     p, img = info.get(current_model, ("Unknown", "Unknown"))
     send_menu(message.chat.id, f"🤖 AI: {p}\n🖼️ Gambar: {img}\n🎨 Generate: Stable Diffusion 3.5\n\nGunakan /help")
 
 @bot.message_handler(commands=['setmodel'])
 def set_model(message):
-    global current_model
+    global current_model, or_model
     c = message.text.replace('/setmodel', '', 1).strip().lower()
     if c == 'groq':
         current_model = 'groq'
@@ -277,14 +281,20 @@ def set_model(message):
             return
         current_model = 'nvidia'
         send_menu(message.chat.id, "✅ Beralih ke NVIDIA NIM (Llama 3.3 + SD3.5)")
-    elif c in ('openrouter', 'or'):
+    elif c.startswith('openrouter') or c.startswith('or'):
         if not OPENROUTER_API_KEY:
             send_menu(message.chat.id, "❌ OPENROUTER_API_KEY belum diset di Vercel")
             return
         current_model = 'openrouter'
-        send_menu(message.chat.id, "✅ Beralih ke OpenRouter (Free Models: DeepSeek V4, Gemma, dll)")
+        parts = c.split(None, 1)
+        if len(parts) > 1:
+            or_model = parts[1].strip()
+            send_menu(message.chat.id, f"✅ OpenRouter → {or_model}")
+        else:
+            or_model = "openrouter/free"
+            send_menu(message.chat.id, "✅ OpenRouter (Free Models: DeepSeek, Gemma, dll)")
     else:
-        send_menu(message.chat.id, "Gunakan: /setmodel groq / /setmodel nvidia / /setmodel openrouter")
+        send_menu(message.chat.id, "Gunakan: /setmodel groq / /setmodel nvidia / /setmodel openrouter [nama_model]")
 
 @bot.message_handler(commands=['generate'])
 def generate_command(message):
