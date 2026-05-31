@@ -68,27 +68,48 @@ def ask_hf_vision(prompt, image_bytes):
     result = hf_client.image_to_text(image_bytes, model=HF_IMAGE_MODEL)
     return f"[HF Image Caption]\n{result}"
 
-@bot.message_handler(commands=['start'])
+def send_menu(chat_id, text):
+    from telebot.types import ReplyKeyboardMarkup, KeyboardButton
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add(
+        KeyboardButton("/search"),
+        KeyboardButton("/model"),
+        KeyboardButton("/help"),
+        KeyboardButton("/setmodel groq"),
+        KeyboardButton("/setmodel hf"),
+    )
+    bot.send_message(chat_id, text, reply_markup=markup)
+
+MENU_TEXT = (
+    "📋 MENU BOT ASISTEN AI FREDI\n\n"
+    "💬 Tanya apa saja — AI akan menjawab\n\n"
+    "🌐 Cari info terbaru:\n"
+    "  /search <query>\n"
+    "  atau ketik: cari <query>\n\n"
+    "🖼️ Kirim gambar — AI baca & analisis teks\n\n"
+    "⚙️ Pengaturan AI:\n"
+    "  /model — lihat AI aktif saat ini\n"
+    "  /setmodel groq — Groq (rekomendasi)\n"
+    "  /setmodel hf — Hugging Face (gratis)\n\n"
+    "📌 Contoh: /search harga emas hari ini"
+)
+
+@bot.message_handler(commands=['start', 'menu', 'help'])
 def start(message):
-    provider = "Groq" if current_model == "groq" else f"Hugging Face ({HF_TEXT_MODEL})"
-    bot.reply_to(message,
-        f"Halo! Saya asisten AI Fredi.\n\n"
-        f"🤖 AI aktif: {provider}\n"
-        f"🌐 /search <query> atau ketik 'cari ...' untuk info terbaru\n"
-        f"🖼️ Kirim gambar untuk analisis\n"
-        f"⚙️ /model untuk ganti penyedia AI\n\n"
-        f"Contoh: /search harga emas hari ini")
+    provider = "Groq (Llama 3.3 70B)" if current_model == "groq" else f"Hugging Face ({HF_TEXT_MODEL})"
+    text = f"🤖 *Asisten AI Fredi* — AI aktif: {provider}\n\n{MENU_TEXT}"
+    send_menu(message.chat.id, text)
 
 @bot.message_handler(commands=['model'])
 def model_info(message):
     provider = "Groq (Llama 3.3 70B)" if current_model == "groq" else f"Hugging Face ({HF_TEXT_MODEL})"
     vision = "Groq Vision (Llama 3.2 90B)" if current_model == "groq" else f"Hugging Face ({HF_IMAGE_MODEL})"
-    bot.reply_to(message,
-        f"Penyedia AI saat ini: {provider}\n"
-        f"Analisis gambar: {vision}\n\n"
-        f"Gunakan:\n"
-        f"/setmodel groq - Groq (cepat, kuat, rekomendasi)\n"
-        f"/setmodel hf - Hugging Face (gratis)")
+    text = (
+        f"🤖 Penyedia AI: {provider}\n"
+        f"🖼️ Analisis gambar: {vision}\n\n"
+        f"Gunakan /help untuk menu lengkap"
+    )
+    send_menu(message.chat.id, text)
 
 @bot.message_handler(commands=['setmodel'])
 def set_model(message):
@@ -96,18 +117,18 @@ def set_model(message):
     choice = message.text.replace('/setmodel', '', 1).strip().lower()
     if choice == 'groq':
         current_model = 'groq'
-        bot.reply_to(message, "✅ Beralih ke Groq (Llama 3.3 70B)")
+        send_menu(message.chat.id, "✅ Beralih ke Groq (Llama 3.3 70B)")
     elif choice in ('hf', 'huggingface'):
         current_model = 'hf'
-        bot.reply_to(message, f"✅ Beralih ke Hugging Face ({HF_TEXT_MODEL})")
+        send_menu(message.chat.id, f"✅ Beralih ke Hugging Face ({HF_TEXT_MODEL})")
     else:
-        bot.reply_to(message, "Gunakan: /setmodel groq atau /setmodel hf")
+        send_menu(message.chat.id, "Gunakan: /setmodel groq atau /setmodel hf")
 
 @bot.message_handler(commands=['search'])
 def search_command(message):
     q = message.text.replace('/search', '', 1).strip()
     if not q:
-        bot.reply_to(message, "Gunakan: /search <query>\nContoh: /search berita terbaru 2026")
+        send_menu(message.chat.id, "Gunakan: /search <query>\nContoh: /search berita terbaru 2026")
         return
     bot.send_chat_action(message.chat.id, 'typing')
     results = web_search(q)
