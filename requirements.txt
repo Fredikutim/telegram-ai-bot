@@ -5,3 +5,5 @@ requests
 duckduckgo_search
 beautifulsoup4
 lxml
+python-docx
+fpdf2

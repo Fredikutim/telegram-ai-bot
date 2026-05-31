@@ -33,7 +33,7 @@ def extract_url(text):
 def read_webpage(url):
     import requests
     try:
-        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
         if resp.status_code != 200:
             return None, f"HTTP {resp.status_code}"
         soup = BeautifulSoup(resp.text, 'lxml')
@@ -42,9 +42,9 @@ def read_webpage(url):
         title = soup.title.string.strip() if soup.title and soup.title.string else ""
         text = soup.get_text(separator='\n', strip=True)
         lines = [l for l in text.split('\n') if len(l) > 20]
-        content = "\n".join(lines[:150])
-        if len(content) > 4000:
-            content = content[:4000] + "..."
+        content = "\n".join(lines[:500])
+        if len(content) > 15000:
+            content = content[:15000] + "..."
         return content, title
     except Exception as e:
         return None, str(e)
@@ -113,6 +113,39 @@ def generate_image(prompt):
         raise Exception(f"NVIDIA Image {resp.status_code}: {resp.text[:200]}")
     b64 = resp.json()['data'][0]['b64_json']
     buf = io.BytesIO(base64.b64decode(b64))
+    buf.seek(0)
+    return buf
+
+def generate_pdf(text):
+    from fpdf import FPDF
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_font("Helvetica", size=9)
+    for line in text.split('\n'):
+        line = line.strip()
+        if not line:
+            pdf.ln(3)
+        else:
+            safe = line.encode('latin-1', 'replace').decode('latin-1')
+            pdf.multi_cell(0, 5, safe)
+    buf = io.BytesIO(pdf.output())
+    buf.seek(0)
+    return buf
+
+def generate_docx(text):
+    from docx import Document
+    doc = Document()
+    for line in text.split('\n'):
+        line = line.strip()
+        if not line:
+            pass
+        elif line.startswith('#') or line.startswith('**'):
+            doc.add_heading(line.replace('#', '').replace('*', '').strip(), level=2)
+        else:
+            doc.add_paragraph(line)
+    buf = io.BytesIO()
+    doc.save(buf)
     buf.seek(0)
     return buf
 
@@ -203,6 +236,30 @@ def search_command(message):
         except:
             bot.reply_to(message, f"Error: {str(e)}. Coba /setmodel")
 
+@bot.message_handler(commands=['savepdf'])
+def save_pdf(message):
+    if not message.reply_to_message or not message.reply_to_message.text:
+        send_menu(message.chat.id, "Balas pesan yang ingin disave dengan /savepdf")
+        return
+    text = message.reply_to_message.text
+    try:
+        buf = generate_pdf(text)
+        bot.send_document(message.chat.id, buf, visible_file_name="output.pdf", caption="📄 PDF siap!")
+    except Exception as e:
+        bot.reply_to(message, f"Gagal buat PDF: {str(e)}")
+
+@bot.message_handler(commands=['savedocx'])
+def save_docx(message):
+    if not message.reply_to_message or not message.reply_to_message.text:
+        send_menu(message.chat.id, "Balas pesan yang ingin disave dengan /savedocx")
+        return
+    text = message.reply_to_message.text
+    try:
+        buf = generate_docx(text)
+        bot.send_document(message.chat.id, buf, visible_file_name="output.docx", caption="📝 Word siap!")
+    except Exception as e:
+        bot.reply_to(message, f"Gagal buat Word: {str(e)}")
+
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     try:
@@ -265,13 +322,14 @@ def handle(message):
         question = text.replace(url, '').strip()
         prompt = f"Konten dari halaman: {title}\n\n{content}\n\n"
         if question:
-            prompt += f"Pertanyaan: {question}\n\nJawab berdasarkan konten di atas."
+            prompt += f"Pertanyaan: {question}\n\nJawab berdasarkan konten di atas secara lengkap."
         else:
-            prompt += "Baca dan jelaskan isi konten di atas secara ringkas. Jika ada soal, jawab soal tersebut."
+            prompt += "Baca SELURUH konten di atas dengan teliti. Jika ada soal-soal, tulis dan jawab SEMUA soal satu per satu tanpa ada yang terlewat. Berikan jawaban lengkap untuk setiap soal."
         bot.edit_message_text("🔗 Menganalisis konten...", message.chat.id, msg.message_id)
         try:
-            reply = ask_groq(prompt, max_tokens=2000) if current_model == 'groq' else ask_nvidia(prompt, max_tokens=2000)
-            bot.edit_message_text(reply, message.chat.id, msg.message_id)
+            reply = ask_groq(prompt, max_tokens=4096) if current_model == 'groq' else ask_nvidia(prompt, max_tokens=4096)
+            save_note = "\n\n—\n💾 Balas pesan ini dengan /savepdf atau /savedocx untuk simpan sebagai file."
+            bot.edit_message_text(reply + save_note, message.chat.id, msg.message_id)
         except Exception as e:
             bot.edit_message_text(f"Error: {str(e)}", message.chat.id, msg.message_id)
         return
