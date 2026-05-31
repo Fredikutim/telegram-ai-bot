@@ -1,4 +1,6 @@
 ﻿import os
+import io
+import base64
 import telebot
 from groq import Groq
 from duckduckgo_search import DDGS
@@ -35,11 +37,11 @@ def format_results(results):
 @bot.message_handler(commands=['start'])
 def start(message):
     bot.reply_to(message,
-        "Halo! Saya asisten AI Fredi dengan kemampuan pencarian web.\n\n"
-        "Fitur:\n"
-        "- Tanya apa saja, AI akan menjawab\n"
-        "- Gunakan /search <query> atau ketik 'cari ...' untuk info terbaru\n"
-        "- Contoh: /search harga emas hari ini")
+        "Halo! Saya asisten AI Fredi dengan kemampuan:\n\n"
+        "🤖 Tanya apa saja, AI akan menjawab\n"
+        "🌐 /search <query> atau ketik 'cari ...' untuk info terbaru\n"
+        "🖼️ Kirim gambar untuk analisis & baca teks\n\n"
+        "Contoh: /search harga emas hari ini")
 
 @bot.message_handler(commands=['search'])
 def search_command(message):
@@ -56,6 +58,28 @@ def search_command(message):
         messages=[{"role": "user", "content": prompt}],
         max_tokens=1500)
     bot.reply_to(message, resp.choices[0].message.content)
+
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message):
+    try:
+        bot.send_chat_action(message.chat.id, 'typing')
+        file_id = message.photo[-1].file_id
+        file_info = bot.get_file(file_id)
+        downloaded = bot.download_file(file_info.file_path)
+        b64 = base64.b64encode(downloaded).decode('utf-8')
+        data_url = f"data:image/jpeg;base64,{b64}"
+
+        prompt = message.caption or "Baca dan analisis semua teks yang ada di gambar ini. Jelaskan isinya secara detail."
+        resp = client.chat.completions.create(
+            model="llama-3.2-90b-vision-preview",
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": data_url}}
+            ]}],
+            max_tokens=2000)
+        bot.reply_to(message, resp.choices[0].message.content)
+    except Exception as e:
+        bot.reply_to(message, f"Maaf, gagal memproses gambar: {str(e)}")
 
 @bot.message_handler(func=lambda m: True)
 def handle(message):
