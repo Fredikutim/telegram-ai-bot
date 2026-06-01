@@ -15,6 +15,7 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN')
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
 NVIDIA_API_KEY = os.environ.get('NVIDIA_API_KEY')
 OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY')
+GENFITY_API_KEY = "genfity_cb5ffbbb8207d3f34764e293d47d54f5a330fd09"
 
 app = Flask(__name__)
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
@@ -24,6 +25,7 @@ current_model = "groq"
 or_model = "openrouter/free"
 NVIDIA_BASE = "https://integrate.api.nvidia.com/v1"
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
+GENFITY_BASE = "https://ai.genfity.com/v1"
 
 SEARCH_TRIGGERS = ['cari', 'search', 'google', 'latest', 'terbaru', 'berita', 'news', 'update', 'terkini', 'hari ini']
 
@@ -152,6 +154,34 @@ def ask_openrouter_vision(prompt, data_url):
             raise
     raise Exception("Semua model OpenRouter gagal untuk vision")
 
+def ask_genfity(prompt, max_tokens=1500):
+    import requests
+    resp = requests.post(f"{GENFITY_BASE}/chat/completions", headers={
+        "Authorization": f"Bearer {GENFITY_API_KEY}",
+        "Content-Type": "application/json",
+    }, json={
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens}, timeout=30)
+    if resp.status_code != 200:
+        raise Exception(f"Genfity {resp.status_code}: {resp.text[:200]}")
+    return resp.json()['choices'][0]['message']['content']
+
+def ask_genfity_vision(prompt, data_url):
+    import requests
+    resp = requests.post(f"{GENFITY_BASE}/chat/completions", headers={
+        "Authorization": f"Bearer {GENFITY_API_KEY}",
+        "Content-Type": "application/json",
+    }, json={
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": data_url}}]}],
+        "max_tokens": 2000}, timeout=30)
+    if resp.status_code != 200:
+        raise Exception(f"Genfity Vision {resp.status_code}: {resp.text[:200]}")
+    return resp.json()['choices'][0]['message']['content']
+
 def generate_image(prompt):
     import requests
     resp = requests.post(f"{NVIDIA_BASE}/images/generations", headers=nvidia_headers(), json={
@@ -234,7 +264,7 @@ def send_menu(chat_id, text):
         KeyboardButton("/generate"), KeyboardButton("/search"),
         KeyboardButton("/model"), KeyboardButton("/help"),
         KeyboardButton("/setmodel groq"), KeyboardButton("/setmodel nvidia"),
-        KeyboardButton("/setmodel openrouter"),
+        KeyboardButton("/setmodel openrouter"), KeyboardButton("/setmodel genfity"),
     )
     bot.send_message(chat_id, text, reply_markup=markup)
 
@@ -248,12 +278,13 @@ MENU_TEXT = (
     "⚙️ /setmodel groq — Groq\n"
     "⚙️ /setmodel nvidia — NVIDIA NIM\n"
     "⚙️ /setmodel openrouter [model] — OpenRouter (default: free)\n"
+    "⚙️ /setmodel genfity — Genfity AI (OpenAI & Anthropic)\n"
     "📌 Contoh: tempel https://...soal-matematika"
 )
 
 @bot.message_handler(commands=['start', 'menu', 'help'])
 def start(message):
-    names = {"groq": "Groq", "nvidia": "NVIDIA NIM", "openrouter": f"OpenRouter ({or_model})"}
+    names = {"groq": "Groq", "nvidia": "NVIDIA NIM", "openrouter": f"OpenRouter ({or_model})", "genfity": "Genfity AI"}
     provider = names.get(current_model, current_model)
     send_menu(message.chat.id, f"🤖 Asisten AI Fredi — AI: {provider}\n\n{MENU_TEXT}")
 
@@ -264,6 +295,7 @@ def model_info(message):
         "groq": ("Groq (Llama 3.3 70B)", "Groq Vision"),
         "nvidia": ("NVIDIA NIM (Llama 3.3 70B)", "NVIDIA Vision"),
         "openrouter": (f"OpenRouter ({or_model})", "OpenRouter Vision"),
+        "genfity": ("Genfity AI (GPT-4o-mini)", "Genfity Vision"),
     }
     p, img = info.get(current_model, ("Unknown", "Unknown"))
     send_menu(message.chat.id, f"🤖 AI: {p}\n🖼️ Gambar: {img}\n🎨 Generate: Stable Diffusion 3.5\n\nGunakan /help")
@@ -293,8 +325,11 @@ def set_model(message):
         else:
             or_model = "openrouter/free"
             send_menu(message.chat.id, "✅ OpenRouter (Free Models: DeepSeek, Gemma, dll)")
+    elif c == 'genfity':
+        current_model = 'genfity'
+        send_menu(message.chat.id, "✅ Beralih ke Genfity AI (GPT-4o-mini)")
     else:
-        send_menu(message.chat.id, "Gunakan: /setmodel groq / /setmodel nvidia / /setmodel openrouter [nama_model]")
+        send_menu(message.chat.id, "Gunakan: /setmodel groq / /setmodel nvidia / /setmodel openrouter [model] / /setmodel genfity")
 
 @bot.message_handler(commands=['generate'])
 def generate_command(message):
@@ -381,6 +416,8 @@ def handle_photo(message):
                 max_tokens=2000).choices[0].message.content
         elif p == 'nvidia':
             reply = ask_nvidia_vision(prompt, data_url)
+        elif p == 'genfity':
+            reply = ask_genfity_vision(prompt, data_url)
         else:
             reply = ask_openrouter_vision(prompt, data_url)
         bot.reply_to(message, reply)
@@ -431,6 +468,8 @@ def handle(message):
                 reply = ask_groq(prompt, 4096)
             elif p == 'nvidia':
                 reply = ask_nvidia(prompt, 4096)
+            elif p == 'genfity':
+                reply = ask_genfity(prompt, 4096)
             else:
                 reply = ask_openrouter(prompt, 4096)
             save_note = "\n\n—\n💾 Balas pesan ini dengan /savepdf atau /savedocx untuk simpan sebagai file."
@@ -458,6 +497,8 @@ def handle(message):
             reply = ask_groq(prompt)
         elif p == 'nvidia':
             reply = ask_nvidia(prompt)
+        elif p == 'genfity':
+            reply = ask_genfity(prompt)
         else:
             reply = ask_openrouter(prompt)
         send_long(message.chat.id, reply, reply_to=message.message_id)
